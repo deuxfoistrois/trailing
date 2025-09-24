@@ -1,16 +1,19 @@
-name: trailing-stop-paper
+name: manage-stops-paper
 
 on:
   workflow_dispatch: {}
   # schedule:
-  #   - cron: "*/10 13-20 * * 1-5"  # cada 10 min, lun-vie, 13:00–20:59 UTC aprox mercado
+  #   - cron: "*/10 13-20 * * 1-5"  # cada 10 min en horario de mercado (UTC)
 
 jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout main
         uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -22,9 +25,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run trailing stop
+      - name: Run script (manage stops)
         env:
           APCA_API_KEY_ID: ${{ secrets.APCA_API_KEY_ID }}
           APCA_API_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
         run: |
-          python trailing_5_8.py
+          python ./manage_stops.py
