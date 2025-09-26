@@ -2,8 +2,8 @@ name: manage-stops-paper
 
 on:
   workflow_dispatch: {}
-  # schedule:
-  #   - cron: "*/10 13-20 * * 1-5"  # cada 10 min en horario de mercado (UTC)
+  schedule:
+    - cron: "*/2 13-20 * * 1-5"   # corre cada 2 minutos, lun-vie, 13:00–20:59 UTC (horario mercado USA aprox)
 
 jobs:
   run:
