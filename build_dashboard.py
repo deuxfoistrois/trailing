@@ -4,7 +4,7 @@ from collections import defaultdict, deque
 from decimal import Decimal
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import GetOrdersRequest
-from alpaca.trading.enums import QueryOrderStatus
+from alpaca.trading.enums import QueryOrderStatus, OrderType
 
 # --- Conexión (paper) ---
 API_KEY = os.environ["APCA_API_KEY_ID"]
@@ -89,17 +89,45 @@ for p in positions:
         "unreal_plpc": float(p.unrealized_plpc) if p.unrealized_plpc is not None else 0.0,
     })
 
+# Órdenes abiertas (ya las teníamos). Además, armamos vistas para trailing y stop fijos.
 orders_rows = []
+trailing_rows = []
+fixed_stop_rows = []
+
 for o in open_orders:
+    # Campos genéricos
+    oid = o.id
+    sym = o.symbol
+    side = getattr(o, "side", None).value if getattr(o, "side", None) else ""
+    otype = getattr(o, "type", None).value if getattr(o, "type", None) else ""
+    qty = float(getattr(o, "qty", 0.0)) if getattr(o, "qty", None) is not None else None
+    status = getattr(o, "status", None).value if getattr(o, "status", None) else ""
+    submitted_at = o.submitted_at.isoformat() if getattr(o, "submitted_at", None) else ""
+
     orders_rows.append({
-        "id": o.id,
-        "symbol": o.symbol,
-        "side": o.side.value,
-        "type": o.type.value,
-        "qty": float(o.qty) if hasattr(o, "qty") and o.qty is not None else None,
-        "status": o.status.value,
-        "submitted_at": o.submitted_at.isoformat() if o.submitted_at else "",
+        "id": oid, "symbol": sym, "side": side, "type": otype,
+        "qty": qty, "status": status, "submitted_at": submitted_at
     })
+
+    # Trailing: agregar columnas trail_percent / trail_price si existen
+    if getattr(o, "type", None) == OrderType.TRAILING_STOP:
+        trail_percent = getattr(o, "trail_percent", None)
+        trail_price = getattr(o, "trail_price", None)
+        tp = float(trail_percent) if trail_percent is not None else None
+        tpr = d2(trail_price) if trail_price is not None else None
+        trailing_rows.append({
+            "id": oid, "symbol": sym, "side": side, "qty": qty,
+            "trail_percent": tp, "trail_price": tpr, "status": status, "submitted_at": submitted_at
+        })
+
+    # Stop fijo: type == STOP
+    if getattr(o, "type", None) == OrderType.STOP:
+        stop_price = getattr(o, "stop_price", None)
+        sp = d2(stop_price) if stop_price is not None else None
+        fixed_stop_rows.append({
+            "id": oid, "symbol": sym, "side": side, "qty": qty,
+            "stop_price": sp, "status": status, "submitted_at": submitted_at
+        })
 
 # --- Cargar históricos para gráficos ---
 equity_labels_intraday, equity_values_intraday = [], []
@@ -110,19 +138,18 @@ if HIST_EQUITY.exists():
             equity_labels_intraday.append(row["timestamp"])
             equity_values_intraday.append(float(row["portfolio_value"]))
 
-# Serie diaria (agrupa por fecha UTC y toma el último valor del día)
+# Serie diaria (último valor por fecha UTC)
 daily_last_by_date = {}
 if HIST_EQUITY.exists():
     with HIST_EQUITY.open("r", newline="") as f:
         r = csv.DictReader(f)
         for row in r:
-            ts = row["timestamp"]             # ISO UTC, ej: 2025-09-27T15:34:00Z
-            date = ts[:10]                    # YYYY-MM-DD
+            date = row["timestamp"][:10]
             daily_last_by_date[date] = float(row["portfolio_value"])
 equity_labels_daily = sorted(daily_last_by_date.keys())
 equity_values_daily = [daily_last_by_date[d] for d in equity_labels_daily]
 
-# Por símbolo: limitar puntos para no inflar HTML
+# Por símbolo (para gráfico individual)
 MAX_POINTS_PER_SYMBOL = 500
 symbol_series = defaultdict(lambda: {"t": deque(maxlen=MAX_POINTS_PER_SYMBOL),
                                      "price": deque(maxlen=MAX_POINTS_PER_SYMBOL),
@@ -134,12 +161,12 @@ if HIST_POS.exists():
             sym = row["symbol"]
             symbol_series[sym]["t"].append(row["timestamp"])
             symbol_series[sym]["price"].append(float(row["current"]))
-            symbol_series[sym]["plpc"].append(float(row["unreal_plpc"]) * 100.0)  # %
+            symbol_series[sym]["plpc"].append(float(row["unreal_plpc"]) * 100.0)
 
 symbol_history = {sym: {"t": list(ser["t"]), "price": list(ser["price"]), "plpc": list(ser["plpc"])}
                   for sym, ser in symbol_series.items()}
 
-# --- Serializaciones JSON seguras ---
+# --- Serializaciones JSON / HTML seguras ---
 EQUITY_LABELS_INTRADAY_JSON = json.dumps(equity_labels_intraday)
 EQUITY_VALUES_INTRADAY_JSON = json.dumps(equity_values_intraday)
 EQUITY_LABELS_DAILY_JSON = json.dumps(equity_labels_daily)
@@ -156,6 +183,7 @@ POS_TBODY_HTML = "".join(
     f"<td class='{'pos' if r['unreal_plpc']>=0 else 'neg'}'>{r['unreal_plpc']*100:.2f}%</td></tr>"
     for r in pos_rows
 )
+
 ORD_TBODY_HTML = "".join(
     f"<tr><td class='muted'>{o['id']}</td>"
     f"<td>{o['symbol']}</td>"
@@ -167,12 +195,37 @@ ORD_TBODY_HTML = "".join(
     for o in orders_rows
 )
 
+TRAIL_TBODY_HTML = "".join(
+    f"<tr>"
+    f"<td class='muted'>{o['id']}</td>"
+    f"<td>{o['symbol']}</td>"
+    f"<td>{o['qty'] if o['qty'] is not None else ''}</td>"
+    f"<td>{(str(o['trail_percent'])+'%') if o['trail_percent'] is not None else ''}</td>"
+    f"<td>{('$'+format(o['trail_price'],',.2f')) if o['trail_price'] is not None else ''}</td>"
+    f"<td>{o['status']}</td>"
+    f"<td>{o['submitted_at']}</td>"
+    f"</tr>"
+    for o in trailing_rows
+)
+
+STOP_TBODY_HTML = "".join(
+    f"<tr>"
+    f"<td class='muted'>{o['id']}</td>"
+    f"<td>{o['symbol']}</td>"
+    f"<td>{o['qty'] if o['qty'] is not None else ''}</td>"
+    f"<td>{('$'+format(o['stop_price'],',.2f')) if o['stop_price'] is not None else ''}</td>"
+    f"<td>{o['status']}</td>"
+    f"<td>{o['submitted_at']}</td>"
+    f"</tr>"
+    for o in fixed_stop_rows
+)
+
 PORTFOLIO_VALUE_TXT = f"${portfolio_value:,.2f}"
 LAST_EQUITY_TXT = f"${last_equity:,.2f}"
 CASH_TXT = f"${cash:,.2f}"
 BUYING_POWER_TXT = f"${buying_power:,.2f}"
 
-# --- Template HTML (sin f-strings) ---
+# --- Template HTML ---
 html_template = """
 <!doctype html>
 <html lang="en">
@@ -255,6 +308,42 @@ html_template = """
     </div>
   </div>
 
+  <div class="section-title">Active Trailing Stops</div>
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th>ID</th><th>Symbol</th><th>Qty</th><th>Trail %</th><th>Trail $</th><th>Status</th><th>Submitted</th></tr>
+      </thead>
+      <tbody>
+        __TRAIL_TBODY__
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section-title">Active Fixed Stops</div>
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th>ID</th><th>Symbol</th><th>Qty</th><th>Stop $</th><th>Status</th><th>Submitted</th></tr>
+      </thead>
+      <tbody>
+        __STOP_TBODY__
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section-title">Open Orders (All Types)</div>
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th>ID</th><th>Symbol</th><th>Side</th><th>Type</th><th>Qty</th><th>Status</th><th>Submitted</th></tr>
+      </thead>
+      <tbody>
+        __ORD_TBODY__
+      </tbody>
+    </table>
+  </div>
+
   <div class="section-title">Positions</div>
   <div class="tablewrap">
     <table>
@@ -263,18 +352,6 @@ html_template = """
       </thead>
       <tbody>
         __POS_TBODY__
-      </tbody>
-    </table>
-  </div>
-
-  <div class="section-title">Open Orders</div>
-  <div class="tablewrap">
-    <table>
-      <thead>
-        <tr><th>ID</th><th>Symbol</th><th>Side</th><th>Type</th><th>Qty</th><th>Status</th><th>Submitted</th></tr>
-      </thead>
-      <tbody>
-        __ORD_TBODY__
       </tbody>
     </table>
   </div>
@@ -378,14 +455,16 @@ html = (html_template
     .replace("__LAST_EQUITY__", LAST_EQUITY_TXT)
     .replace("__CASH__", CASH_TXT)
     .replace("__BUYING_POWER__", BUYING_POWER_TXT)
-    .replace("__POS_TBODY__", POS_TBODY_HTML)
-    .replace("__ORD_TBODY__", ORD_TBODY_HTML)
     .replace("__EQUITY_LABELS_INTRADAY_JSON__", json.dumps(equity_labels_intraday))
     .replace("__EQUITY_VALUES_INTRADAY_JSON__", json.dumps(equity_values_intraday))
     .replace("__EQUITY_LABELS_DAILY_JSON__", json.dumps(equity_labels_daily))
     .replace("__EQUITY_VALUES_DAILY_JSON__", json.dumps(equity_values_daily))
     .replace("__SYMBOL_HISTORY_JSON__", SYMBOL_HISTORY_JSON)
+    .replace("__ORD_TBODY__", ORD_TBODY_HTML)
+    .replace("__TRAIL_TBODY__", TRAIL_TBODY_HTML)
+    .replace("__STOP_TBODY__", STOP_TBODY_HTML)
+    .replace("__POS_TBODY__", POS_TBODY_HTML)
 )
 
 OUT_HTML.write_text(html, encoding="utf-8")
-print(f"Wrote {OUT_HTML} (daily+intraday) and updated {HIST_EQUITY} / {HIST_POS}")
+print(f"Wrote {OUT_HTML} (trailing+fixed stops sections) and updated {HIST_EQUITY} / {HIST_POS}")
