@@ -1,3 +1,4 @@
+# build_dashboard.py
 import os, csv, json, pathlib, datetime
 from collections import defaultdict, deque
 from decimal import Decimal
@@ -18,11 +19,14 @@ DOCS.mkdir(exist_ok=True)
 DATA.mkdir(exist_ok=True)
 
 HIST_EQUITY = DATA / "equity_history.csv"
-HIST_POS = DATA / "pos_history.csv"    # NUEVO: histórico por símbolo
+HIST_POS = DATA / "pos_history.csv"    # histórico por símbolo
 OUT_HTML = DOCS / "index.html"
 
-def d2(x): return float(Decimal(str(x)).quantize(Decimal("0.01")))
-def now_iso(): return datetime.datetime.utcnow().replace(microsecond=0).isoformat()+"Z"
+def d2(x): 
+    return float(Decimal(str(x)).quantize(Decimal("0.01")))
+
+def now_iso(): 
+    return datetime.datetime.utcnow().replace(microsecond=0).isoformat()+"Z"
 
 # --- Datos de cuenta/posiciones/órdenes ---
 account = client.get_account()
@@ -106,7 +110,7 @@ if HIST_EQUITY.exists():
             equity_labels.append(row["timestamp"])
             equity_values.append(float(row["portfolio_value"]))
 
-# Por símbolo: guardamos hasta N puntos recientes para no inflar el HTML
+# Por símbolo: limitar puntos para no inflar HTML
 MAX_POINTS_PER_SYMBOL = 500
 symbol_series = defaultdict(lambda: {"t": deque(maxlen=MAX_POINTS_PER_SYMBOL),
                                      "price": deque(maxlen=MAX_POINTS_PER_SYMBOL),
@@ -119,9 +123,9 @@ if HIST_POS.exists():
             sym = row["symbol"]
             symbol_series[sym]["t"].append(row["timestamp"])
             symbol_series[sym]["price"].append(float(row["current"]))
-            symbol_series[sym]["plpc"].append(float(row["unreal_plpc"]) * 100.0)  # a %
+            symbol_series[sym]["plpc"].append(float(row["unreal_plpc"]) * 100.0)  # %
 
-# Pasar a listas serializables
+# Convertir a listas serializables
 symbol_history = {}
 for sym, ser in symbol_series.items():
     symbol_history[sym] = {
@@ -130,55 +134,87 @@ for sym, ser in symbol_series.items():
         "plpc": list(ser["plpc"]),
     }
 
-# --- HTML/CSS responsive + gráfico por símbolo ---
-html = f"""<!doctype html>
+# --- Serializaciones JSON seguras para HTML ---
+EQUITY_LABELS_JSON = json.dumps(equity_labels)
+EQUITY_VALUES_JSON = json.dumps(equity_values)
+SYMBOL_HISTORY_JSON = json.dumps(symbol_history)
+POS_TBODY_HTML = "".join(
+    f"<tr><td>{r['symbol']}</td>"
+    f"<td>{r['qty']:.6g}</td>"
+    f"<td>${r['avg_entry']:,.2f}</td>"
+    f"<td>${r['current']:,.2f}</td>"
+    f"<td>${r['market_value']:,.2f}</td>"
+    f"<td class='{'pos' if r['unreal_pl']>=0 else 'neg'}'>${r['unreal_pl']:,.2f}</td>"
+    f"<td class='{'pos' if r['unreal_plpc']>=0 else 'neg'}'>{r['unreal_plpc']*100:.2f}%</td></tr>"
+    for r in pos_rows
+)
+ORD_TBODY_HTML = "".join(
+    f"<tr><td class='muted'>{o['id']}</td>"
+    f"<td>{o['symbol']}</td>"
+    f"<td>{o['side']}</td>"
+    f"<td>{o['type']}</td>"
+    f"<td>{o['qty'] if o['qty'] is not None else ''}</td>"
+    f"<td>{o['status']}</td>"
+    f"<td>{o['submitted_at']}</td></tr>"
+    for o in orders_rows
+)
+
+# KPIs
+PORTFOLIO_VALUE_TXT = f"${portfolio_value:,.2f}"
+LAST_EQUITY_TXT = f"${last_equity:,.2f}"
+CASH_TXT = f"${cash:,.2f}"
+BUYING_POWER_TXT = f"${buying_power:,.2f}"
+
+# --- Template HTML (sin f-strings) ---
+html_template = """
+<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Alpaca Paper Dashboard</title>
 <style>
-  :root {{
+  :root {
     --bg: #0b0d10; --card: #111418; --muted: #9aa4ad; --fg: #e6eef5; --border: #222831;
     --pos: #14b86e; --neg: #ff5a5f; --accent: #60a5fa;
-  }}
-  @media (prefers-color-scheme: light) {{
-    :root {{
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
       --bg:#f7f8fa; --card:#ffffff; --muted:#5b6670; --fg:#0b141a; --border:#dfe5ec;
       --pos:#0a7f4f; --neg:#c03a3e; --accent:#2563eb;
-    }}
-  }}
-  * {{ box-sizing: border-box; }}
-  body {{
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
     margin:0; background:var(--bg); color:var(--fg);
     font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
     padding:16px;
-  }}
-  .container{{max-width:1200px;margin:0 auto}}
-  header{{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;flex-wrap:wrap}}
-  h1{{font-size:20px;margin:0}}
-  .muted{{color:var(--muted)}}
-  .grid{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}}
-  @media (max-width:900px){{.grid{{grid-template-columns:repeat(2,minmax(0,1fr))}}}}
-  @media (max-width:560px){{.grid{{grid-template-columns:1fr}}}}
-  .card{{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px}}
-  .kpi .label{{font-size:12px;color:var(--muted);margin-bottom:6px}}
-  .kpi .value{{font-size:22px;font-weight:600}}
-  .section-title{{font-size:16px;margin:14px 0 6px 0}}
-  .tablewrap{{overflow:auto;border:1px solid var(--border);border-radius:12px}}
-  table{{border-collapse:separate;border-spacing:0;width:100%;min-width:680px;background:var(--card)}}
-  th,td{{padding:10px 12px;border-bottom:1px solid var(--border);font-size:14px;text-align:right;white-space:nowrap}}
-  th:first-child,td:first-child{{text-align:left}}
-  thead th{{position:sticky;top:0;background:var(--card);z-index:1}}
-  tbody tr:hover{{background:rgba(96,165,250,.08)}}
-  .pos{{color:var(--pos)}} .neg{{color:var(--neg)}}
-  .row{{display:grid;grid-template-columns:2fr 1fr;gap:12px}}
-  @media (max-width:900px){{.row{{grid-template-columns:1fr}}}}
-  .toolbar{{display:flex;gap:8px;align-items:center;flex-wrap:wrap}}
-  select,button{{padding:8px 10px;border-radius:10px;border:1px solid var(--border);background:var(--card);color:var(--fg)}}
-  .foot{{margin-top:12px;color:var(--muted);font-size:12px}}
-  .chartbox{{height:320px}}
-  @media (max-width:560px){{.chartbox{{height:260px}}}}
+  }
+  .container{max-width:1200px;margin:0 auto}
+  header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;flex-wrap:wrap}
+  h1{font-size:20px;margin:0}
+  .muted{color:var(--muted)}
+  .grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+  @media (max-width:900px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media (max-width:560px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px}
+  .kpi .label{font-size:12px;color:var(--muted);margin-bottom:6px}
+  .kpi .value{font-size:22px;font-weight:600}
+  .section-title{font-size:16px;margin:14px 0 6px 0}
+  .tablewrap{overflow:auto;border:1px solid var(--border);border-radius:12px}
+  table{border-collapse:separate;border-spacing:0;width:100%;min-width:680px;background:var(--card)}
+  th,td{padding:10px 12px;border-bottom:1px solid var(--border);font-size:14px;text-align:right;white-space:nowrap}
+  th:first-child,td:first-child{text-align:left}
+  thead th{position:sticky;top:0;background:var(--card);z-index:1}
+  tbody tr:hover{background:rgba(96,165,250,.08)}
+  .pos{color:var(--pos)} .neg{color:var(--neg)}
+  .row{display:grid;grid-template-columns:2fr 1fr;gap:12px}
+  @media (max-width:900px){.row{grid-template-columns:1fr}}
+  .toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  select,button{padding:8px 10px;border-radius:10px;border:1px solid var(--border);background:var(--card);color:var(--fg)}
+  .foot{margin-top:12px;color:var(--muted);font-size:12px}
+  .chartbox{height:320px}
+  @media (max-width:560px){.chartbox{height:260px}}
 </style>
 </head>
 <body>
@@ -186,7 +222,7 @@ html = f"""<!doctype html>
   <header>
     <div>
       <h1>Alpaca Paper Dashboard</h1>
-      <div class="muted">Last update: {timestamp} (UTC)</div>
+      <div class="muted">Last update: __TIMESTAMP__ (UTC)</div>
     </div>
     <div class="toolbar">
       <label class="muted" for="symSel">Symbol</label>
@@ -196,10 +232,10 @@ html = f"""<!doctype html>
   </header>
 
   <div class="grid">
-    <div class="card kpi"><div class="label">Portfolio Value</div><div class="value">${portfolio_value:,.2f}</div></div>
-    <div class="card kpi"><div class="label">Last Equity (prev close)</div><div class="value">${last_equity:,.2f}</div></div>
-    <div class="card kpi"><div class="label">Cash</div><div class="value">${cash:,.2f}</div></div>
-    <div class="card kpi"><div class="label">Buying Power</div><div class="value">${buying_power:,.2f}</div></div>
+    <div class="card kpi"><div class="label">Portfolio Value</div><div class="value">__PORTFOLIO_VALUE__</div></div>
+    <div class="card kpi"><div class="label">Last Equity (prev close)</div><div class="value">__LAST_EQUITY__</div></div>
+    <div class="card kpi"><div class="label">Cash</div><div class="value">__CASH__</div></div>
+    <div class="card kpi"><div class="label">Buying Power</div><div class="value">__BUYING_POWER__</div></div>
   </div>
 
   <div class="row">
@@ -221,7 +257,7 @@ html = f"""<!doctype html>
         <tr><th>Symbol</th><th>Qty</th><th>Avg Entry</th><th>Current</th><th>Market Value</th><th>Unreal P/L</th><th>Unreal P/L %</th></tr>
       </thead>
       <tbody>
-        {"".join(f"<tr><td>{r['symbol']}</td><td>{r['qty']:.6g}</td><td>${r['avg_entry']:,.2f}</td><td>${r['current']:,.2f}</td><td>${r['market_value']:,.2f}</td><td class='{'pos' if r['unreal_pl']>=0 else 'neg'}'>${r['unreal_pl']:,.2f}</td><td class='{'pos' if r['unreal_plpc']>=0 else 'neg'}'>{r['unreal_plpc']*100:.2f}%</td></tr>" for r in pos_rows)}
+        __POS_TBODY__
       </tbody>
     </table>
   </div>
@@ -233,7 +269,7 @@ html = f"""<!doctype html>
         <tr><th>ID</th><th>Symbol</th><th>Side</th><th>Type</th><th>Qty</th><th>Status</th><th>Submitted</th></tr>
       </thead>
       <tbody>
-        {"".join(f"<tr><td class='muted'>{o['id']}</td><td>{o['symbol']}</td><td>{o['side']}</td><td>{o['type']}</td><td>{o['qty'] if o['qty'] is not None else ''}</td><td>{o['status']}</td><td>{o['submitted_at']}</td></tr>" for o in orders_rows)}
+        __ORD_TBODY__
       </tbody>
     </table>
   </div>
@@ -243,26 +279,26 @@ html = f"""<!doctype html>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
-const equityLabels = {json.dumps(equity_labels)};
-const equityValues = {json.dumps(equity_values)};
-const symbolHistory = {json.dumps(symbol_history)};
+const equityLabels = __EQUITY_LABELS_JSON__;
+const equityValues = __EQUITY_VALUES_JSON__;
+const symbolHistory = __SYMBOL_HISTORY_JSON__;
 
 const eqCtx = document.getElementById('equityChart').getContext('2d');
-const eqChart = new Chart(eqCtx, {{
+const eqChart = new Chart(eqCtx, {
   type: 'line',
-  data: {{
+  data: {
     labels: equityLabels,
-    datasets: [{{ label:'Portfolio Value', data: equityValues, borderWidth:2, fill:false, tension:0.25 }}]
-  }},
-  options: {{
+    datasets: [{ label:'Portfolio Value', data: equityValues, borderWidth:2, fill:false, tension:0.25 }]
+  },
+  options: {
     responsive:true,
     maintainAspectRatio:false,
-    plugins:{{ legend:{{display:false}} }},
-    scales:{{
-      y:{{ ticks:{{ callback:(v)=>'$'+v.toLocaleString() }} }}
-    }}
-  }}
-}});
+    plugins:{ legend:{display:false} },
+    scales:{
+      y:{ ticks:{ callback:(v)=>'$'+v.toLocaleString() } }
+    }
+  }
+});
 
 // --- Per-symbol chart ---
 const symSel = document.getElementById('symSel');
@@ -270,46 +306,46 @@ const toggleBtn = document.getElementById('toggleMetric');
 let metric = 'plpc'; // 'plpc' (%) o 'price'
 
 const symbols = Object.keys(symbolHistory).sort();
-for (const s of symbols) {{
+for (const s of symbols) {
   const opt = document.createElement('option');
   opt.value = s; opt.textContent = s;
   symSel.appendChild(opt);
-}}
-if (symbols.length === 0) {{
+}
+if (symbols.length === 0) {
   const opt = document.createElement('option');
   opt.value = ''; opt.textContent = 'No positions';
   symSel.appendChild(opt);
-}}
+}
 
 const symCtx = document.getElementById('symbolChart').getContext('2d');
 let symChart = null;
 
-function renderSymbolChart(sym) {{
+function renderSymbolChart(sym) {
   if (!sym || !symbolHistory[sym]) return;
   const H = symbolHistory[sym];
   const labels = H.t;
   const data = (metric === 'plpc') ? H.plpc : H.price;
   const label = (metric === 'plpc') ? '% P/L' : 'Price';
   if (symChart) symChart.destroy();
-  symChart = new Chart(symCtx, {{
+  symChart = new Chart(symCtx, {
     type: 'line',
-    data: {{
+    data: {
       labels,
-      datasets: [{{ label: sym + ' ' + label, data, borderWidth:2, fill:false, tension:0.25 }}]
-    }},
-    options: {{
+      datasets: [{ label: sym + ' ' + label, data, borderWidth:2, fill:false, tension:0.25 }]
+    },
+    options: {
       responsive:true,
       maintainAspectRatio:false,
-      plugins:{{ legend:{{display:false}} }},
-      scales:{{
-        y:{{
-          ticks:{{
+      plugins:{ legend:{display:false} },
+      scales:{
+        y:{
+          ticks:{
             callback:(v)=> metric==='plpc' ? v.toFixed(2)+'%' : '$'+v.toLocaleString()
-          }}
-        }}
-      }}
-    }}
-  }});
+          }
+        }
+      }
+    }
+  });
 }
 
 symSel.addEventListener('change', ()=> renderSymbolChart(symSel.value));
@@ -319,15 +355,26 @@ toggleBtn.addEventListener('click', ()=>{
   renderSymbolChart(symSel.value);
 });
 
-// render inicial
-if (symbols.length > 0) {{
+if (symbols.length > 0) {
   symSel.value = symbols[0];
   renderSymbolChart(symbols[0]);
-}}
+}
 </script>
 </body>
 </html>
 """
+
+# --- Reemplazos de tokens ---
+html = html_template.replace("__TIMESTAMP__", timestamp)\
+    .replace("__PORTFOLIO_VALUE__", PORTFOLIO_VALUE_TXT)\
+    .replace("__LAST_EQUITY__", LAST_EQUITY_TXT)\
+    .replace("__CASH__", CASH_TXT)\
+    .replace("__BUYING_POWER__", BUYING_POWER_TXT)\
+    .replace("__POS_TBODY__", POS_TBODY_HTML)\
+    .replace("__ORD_TBODY__", ORD_TBODY_HTML)\
+    .replace("__EQUITY_LABELS_JSON__", EQUITY_LABELS_JSON)\
+    .replace("__EQUITY_VALUES_JSON__", EQUITY_VALUES_JSON)\
+    .replace("__SYMBOL_HISTORY_JSON__", SYMBOL_HISTORY_JSON)
 
 OUT_HTML.write_text(html, encoding="utf-8")
 print(f"Wrote {OUT_HTML} and updated {HIST_EQUITY} / {HIST_POS}")
