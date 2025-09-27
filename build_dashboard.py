@@ -245,7 +245,7 @@ html = f"""<!doctype html>
 <script>
 const equityLabels = {json.dumps(equity_labels)};
 const equityValues = {json.dumps(equity_values)};
-const symbolHistory = {json.dumps(symbol_history)}; // {{ symbol: {{t:[], price:[], plpc:[]}} }}
+const symbolHistory = {json.dumps(symbol_history)};
 
 const eqCtx = document.getElementById('equityChart').getContext('2d');
 const eqChart = new Chart(eqCtx, {{
