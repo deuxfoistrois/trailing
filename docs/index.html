@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Alpaca Paper Dashboard</title>
+<style>
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 24px; }
+  h1 { margin: 0 0 8px; }
+  .meta { margin-bottom: 16px; }
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+  th, td { border: 1px solid #ddd; padding: 8px; font-size: 14px; text-align: right; }
+  th { background: #f6f6f6; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  .pos { overflow-x:auto; }
+  .pill { display:inline-block; padding:2px 8px; border-radius: 12px; border:1px solid #ccc; font-size:12px; }
+  .green { color:#0a0; }
+  .red { color:#a00; }
+  .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px,1fr)); gap: 12px; margin: 16px 0; }
+  .card { border:1px solid #ddd; border-radius:8px; padding:12px; }
+  .muted { color:#666; }
+  canvas { max-width: 100%; height: 320px; }
+</style>
+</head>
+<body>
+
+<h1>Alpaca Paper Dashboard</h1>
+<div class="meta muted">Last update: 2025-09-27T22:25:04Z (UTC)</div>
+
+<div class="grid">
+  <div class="card"><div class="muted">Portfolio Value</div><div style="font-size:22px;">$100,127.30</div></div>
+  <div class="card"><div class="muted">Last Equity (prev close)</div><div style="font-size:22px;">$100,127.30</div></div>
+  <div class="card"><div class="muted">Cash</div><div style="font-size:22px;">$5.01</div></div>
+  <div class="card"><div class="muted">Buying Power</div><div style="font-size:22px;">$100,132.31</div></div>
+</div>
+
+<h2>Equity History</h2>
+<canvas id="equityChart"></canvas>
+
+<h2>Positions</h2>
+<div class="pos">
+<table>
+  <thead>
+    <tr>
+      <th>Symbol</th><th>Qty</th><th>Avg Entry</th><th>Current</th><th>Market Value</th><th>Unreal P/L</th><th>Unreal P/L %</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td>ANIP</td><td>262.988</td><td>$95.05</td><td>$93.05</td><td>$24,471.01</td><td class='red'>$-525.98</td><td class='red'>-2.10%</td></tr><tr><td>APH</td><td>203.021</td><td>$123.13</td><td>$122.60</td><td>$24,890.39</td><td class='red'>$-107.60</td><td class='red'>-0.43%</td></tr><tr><td>CENX</td><td>958.956</td><td>$26.07</td><td>$27.99</td><td>$26,841.16</td><td class='green'>$1,841.19</td><td class='green'>7.36%</td></tr><tr><td>EAT</td><td>180.95</td><td>$138.16</td><td>$132.19</td><td>$23,919.72</td><td class='red'>$-1,080.27</td><td class='red'>-4.32%</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>Open Orders</h2>
+<div class="pos">
+<table>
+  <thead>
+    <tr><th>ID</th><th>Symbol</th><th>Side</th><th>Type</th><th>Qty</th><th>Status</th><th>Submitted</th></tr>
+  </thead>
+  <tbody>
+    <tr><td class='muted'>a6c3ce6f-37c0-4519-ab86-edbd74185cdc</td><td>EAT</td><td>sell</td><td>stop</td><td>180.949551244</td><td>accepted</td><td>2025-09-27T22:17:35.964512+00:00</td></tr><tr><td class='muted'>f2e8829b-c685-4398-923b-4db2721d26e1</td><td>CENX</td><td>sell</td><td>stop</td><td>958.955504411</td><td>accepted</td><td>2025-09-26T20:19:22.283694+00:00</td></tr><tr><td class='muted'>d6645009-f7a7-42b1-89be-14917ef1754d</td><td>APH</td><td>sell</td><td>stop</td><td>203.021115893</td><td>accepted</td><td>2025-09-26T20:19:22.255592+00:00</td></tr><tr><td class='muted'>f8cd35dd-808f-4736-8d25-c5731b8ab784</td><td>ANIP</td><td>sell</td><td>stop</td><td>262.987795896</td><td>accepted</td><td>2025-09-26T20:19:22.224344+00:00</td></tr>
+  </tbody>
+</table>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+const labels = ["2025-09-27T22:25:04Z"];
+const data = [100127.3];
+const ctx = document.getElementById('equityChart').getContext('2d');
+new Chart(ctx, {
+  type: 'line',
+  data: {
+    labels,
+    datasets: [{
+      label: 'Portfolio Value',
+      data: data,
+      borderWidth: 2,
+      fill: false,
+      tension: 0.1
+    }]
+  },
+  options: {
+    responsive: true,
+    scales: {
+      y: {
+        ticks: {
+          callback: (v) => '$' + v.toLocaleString()
+        }
+      }
+    },
+    plugins: {
+      legend: { display: false }
+    }
+  }
+});
+</script>
+
+</body>
+</html>
