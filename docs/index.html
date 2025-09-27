@@ -50,7 +50,7 @@
   <header>
     <div>
       <h1>Alpaca Paper Dashboard</h1>
-      <div class="muted">Last update: 2025-09-27T22:54:02Z (UTC)</div>
+      <div class="muted">Last update: 2025-09-27T23:13:33Z (UTC)</div>
     </div>
     <div class="toolbar">
       <button id="equityToggle">Equity: Daily</button>
@@ -87,7 +87,7 @@
         <tr><th>ID</th><th>Symbol</th><th>Qty</th><th>Trail %</th><th>Trail $</th><th>Status</th><th>Submitted</th></tr>
       </thead>
       <tbody>
-        
+        <tr><td class='muted'>17b25339-a41e-4827-b2d3-d4ca21d229d6</td><td>CENX</td><td>958.0</td><td>8.0%</td><td></td><td>new</td><td>2025-09-27T23:12:45.303339+00:00</td></tr>
       </tbody>
     </table>
   </div>
@@ -99,7 +99,7 @@
         <tr><th>ID</th><th>Symbol</th><th>Qty</th><th>Stop $</th><th>Status</th><th>Submitted</th></tr>
       </thead>
       <tbody>
-        <tr><td class='muted'>a6c3ce6f-37c0-4519-ab86-edbd74185cdc</td><td>EAT</td><td>180.949551244</td><td>$124.34</td><td>accepted</td><td>2025-09-27T22:17:35.964512+00:00</td></tr><tr><td class='muted'>f2e8829b-c685-4398-923b-4db2721d26e1</td><td>CENX</td><td>958.955504411</td><td>$23.46</td><td>accepted</td><td>2025-09-26T20:19:22.283694+00:00</td></tr><tr><td class='muted'>d6645009-f7a7-42b1-89be-14917ef1754d</td><td>APH</td><td>203.021115893</td><td>$110.82</td><td>accepted</td><td>2025-09-26T20:19:22.255592+00:00</td></tr><tr><td class='muted'>f8cd35dd-808f-4736-8d25-c5731b8ab784</td><td>ANIP</td><td>262.987795896</td><td>$85.55</td><td>accepted</td><td>2025-09-26T20:19:22.224344+00:00</td></tr>
+        <tr><td class='muted'>a6c3ce6f-37c0-4519-ab86-edbd74185cdc</td><td>EAT</td><td>180.949551244</td><td>$124.34</td><td>accepted</td><td>2025-09-27T22:17:35.964513+00:00</td></tr><tr><td class='muted'>d6645009-f7a7-42b1-89be-14917ef1754d</td><td>APH</td><td>203.021115893</td><td>$110.82</td><td>accepted</td><td>2025-09-26T20:19:22.255592+00:00</td></tr><tr><td class='muted'>f8cd35dd-808f-4736-8d25-c5731b8ab784</td><td>ANIP</td><td>262.987795896</td><td>$85.55</td><td>accepted</td><td>2025-09-26T20:19:22.224344+00:00</td></tr>
       </tbody>
     </table>
   </div>
@@ -111,7 +111,7 @@
         <tr><th>ID</th><th>Symbol</th><th>Side</th><th>Type</th><th>Qty</th><th>Status</th><th>Submitted</th></tr>
       </thead>
       <tbody>
-        <tr><td class='muted'>a6c3ce6f-37c0-4519-ab86-edbd74185cdc</td><td>EAT</td><td>sell</td><td>stop</td><td>180.949551244</td><td>accepted</td><td>2025-09-27T22:17:35.964512+00:00</td></tr><tr><td class='muted'>f2e8829b-c685-4398-923b-4db2721d26e1</td><td>CENX</td><td>sell</td><td>stop</td><td>958.955504411</td><td>accepted</td><td>2025-09-26T20:19:22.283694+00:00</td></tr><tr><td class='muted'>d6645009-f7a7-42b1-89be-14917ef1754d</td><td>APH</td><td>sell</td><td>stop</td><td>203.021115893</td><td>accepted</td><td>2025-09-26T20:19:22.255592+00:00</td></tr><tr><td class='muted'>f8cd35dd-808f-4736-8d25-c5731b8ab784</td><td>ANIP</td><td>sell</td><td>stop</td><td>262.987795896</td><td>accepted</td><td>2025-09-26T20:19:22.224344+00:00</td></tr>
+        <tr><td class='muted'>17b25339-a41e-4827-b2d3-d4ca21d229d6</td><td>CENX</td><td>sell</td><td>trailing_stop</td><td>958.0</td><td>new</td><td>2025-09-27T23:12:45.303339+00:00</td></tr><tr><td class='muted'>a6c3ce6f-37c0-4519-ab86-edbd74185cdc</td><td>EAT</td><td>sell</td><td>stop</td><td>180.949551244</td><td>accepted</td><td>2025-09-27T22:17:35.964513+00:00</td></tr><tr><td class='muted'>d6645009-f7a7-42b1-89be-14917ef1754d</td><td>APH</td><td>sell</td><td>stop</td><td>203.021115893</td><td>accepted</td><td>2025-09-26T20:19:22.255592+00:00</td></tr><tr><td class='muted'>f8cd35dd-808f-4736-8d25-c5731b8ab784</td><td>ANIP</td><td>sell</td><td>stop</td><td>262.987795896</td><td>accepted</td><td>2025-09-26T20:19:22.224344+00:00</td></tr>
       </tbody>
     </table>
   </div>
@@ -133,11 +133,11 @@
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
-const equityLabelsIntraday = ["2025-09-27T22:25:04Z", "2025-09-27T22:42:31Z", "2025-09-27T22:48:55Z", "2025-09-27T22:54:02Z"];
-const equityValuesIntraday = [100127.3, 100127.3, 100127.3, 100127.3];
+const equityLabelsIntraday = ["2025-09-27T22:25:04Z", "2025-09-27T22:42:31Z", "2025-09-27T22:48:55Z", "2025-09-27T22:54:02Z", "2025-09-27T23:13:33Z"];
+const equityValuesIntraday = [100127.3, 100127.3, 100127.3, 100127.3, 100127.3];
 const equityLabelsDaily = ["2025-09-27"];
 const equityValuesDaily = [100127.3];
-const symbolHistory = {"ANIP": {"t": ["2025-09-27T22:42:31Z", "2025-09-27T22:48:55Z", "2025-09-27T22:54:02Z"], "price": [93.05, 93.05, 93.05], "plpc": [-2.1042, -2.1042, -2.1042]}, "APH": {"t": ["2025-09-27T22:42:31Z", "2025-09-27T22:48:55Z", "2025-09-27T22:54:02Z"], "price": [122.6, 122.6, 122.6], "plpc": [-0.43039999999999995, -0.43039999999999995, -0.43039999999999995]}, "CENX": {"t": ["2025-09-27T22:42:31Z", "2025-09-27T22:48:55Z", "2025-09-27T22:54:02Z"], "price": [27.99, 27.99, 27.99], "plpc": [7.364800000000001, 7.364800000000001, 7.364800000000001]}, "EAT": {"t": ["2025-09-27T22:42:31Z", "2025-09-27T22:48:55Z", "2025-09-27T22:54:02Z"], "price": [132.19, 132.19, 132.19], "plpc": [-4.3210999999999995, -4.3210999999999995, -4.3210999999999995]}};
+const symbolHistory = {"ANIP": {"t": ["2025-09-27T22:42:31Z", "2025-09-27T22:48:55Z", "2025-09-27T22:54:02Z", "2025-09-27T23:13:33Z"], "price": [93.05, 93.05, 93.05, 93.05], "plpc": [-2.1042, -2.1042, -2.1042, -2.1042]}, "APH": {"t": ["2025-09-27T22:42:31Z", "2025-09-27T22:48:55Z", "2025-09-27T22:54:02Z", "2025-09-27T23:13:33Z"], "price": [122.6, 122.6, 122.6, 122.6], "plpc": [-0.43039999999999995, -0.43039999999999995, -0.43039999999999995, -0.43039999999999995]}, "CENX": {"t": ["2025-09-27T22:42:31Z", "2025-09-27T22:48:55Z", "2025-09-27T22:54:02Z", "2025-09-27T23:13:33Z"], "price": [27.99, 27.99, 27.99, 27.99], "plpc": [7.364800000000001, 7.364800000000001, 7.364800000000001, 7.364800000000001]}, "EAT": {"t": ["2025-09-27T22:42:31Z", "2025-09-27T22:48:55Z", "2025-09-27T22:54:02Z", "2025-09-27T23:13:33Z"], "price": [132.19, 132.19, 132.19, 132.19], "plpc": [-4.3210999999999995, -4.3210999999999995, -4.3210999999999995, -4.3210999999999995]}};
 
 const eqCtx = document.getElementById('equityChart').getContext('2d');
 let equityMode = 'daily'; // 'daily' o 'intraday'
