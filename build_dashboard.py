@@ -22,10 +22,10 @@ HIST_EQUITY = DATA / "equity_history.csv"
 HIST_POS = DATA / "pos_history.csv"    # histórico por símbolo
 OUT_HTML = DOCS / "index.html"
 
-def d2(x): 
+def d2(x):
     return float(Decimal(str(x)).quantize(Decimal("0.01")))
 
-def now_iso(): 
+def now_iso():
     return datetime.datetime.utcnow().replace(microsecond=0).isoformat()+"Z"
 
 # --- Datos de cuenta/posiciones/órdenes ---
@@ -39,7 +39,7 @@ cash = float(account.cash)
 buying_power = float(account.buying_power)
 last_equity = float(account.last_equity) if account.last_equity is not None else portfolio_value
 
-# --- Actualizar equity_history.csv ---
+# --- Actualizar equity_history.csv (intraday) ---
 write_header_eq = not HIST_EQUITY.exists()
 append_eq = True
 if HIST_EQUITY.exists():
@@ -102,20 +102,31 @@ for o in open_orders:
     })
 
 # --- Cargar históricos para gráficos ---
-equity_labels, equity_values = [], []
+equity_labels_intraday, equity_values_intraday = [], []
 if HIST_EQUITY.exists():
     with HIST_EQUITY.open("r", newline="") as f:
         r = csv.DictReader(f)
         for row in r:
-            equity_labels.append(row["timestamp"])
-            equity_values.append(float(row["portfolio_value"]))
+            equity_labels_intraday.append(row["timestamp"])
+            equity_values_intraday.append(float(row["portfolio_value"]))
+
+# Serie diaria (agrupa por fecha UTC y toma el último valor del día)
+daily_last_by_date = {}
+if HIST_EQUITY.exists():
+    with HIST_EQUITY.open("r", newline="") as f:
+        r = csv.DictReader(f)
+        for row in r:
+            ts = row["timestamp"]             # ISO UTC, ej: 2025-09-27T15:34:00Z
+            date = ts[:10]                    # YYYY-MM-DD
+            daily_last_by_date[date] = float(row["portfolio_value"])
+equity_labels_daily = sorted(daily_last_by_date.keys())
+equity_values_daily = [daily_last_by_date[d] for d in equity_labels_daily]
 
 # Por símbolo: limitar puntos para no inflar HTML
 MAX_POINTS_PER_SYMBOL = 500
 symbol_series = defaultdict(lambda: {"t": deque(maxlen=MAX_POINTS_PER_SYMBOL),
                                      "price": deque(maxlen=MAX_POINTS_PER_SYMBOL),
                                      "plpc": deque(maxlen=MAX_POINTS_PER_SYMBOL)})
-
 if HIST_POS.exists():
     with HIST_POS.open("r", newline="") as f:
         r = csv.DictReader(f)
@@ -125,19 +136,16 @@ if HIST_POS.exists():
             symbol_series[sym]["price"].append(float(row["current"]))
             symbol_series[sym]["plpc"].append(float(row["unreal_plpc"]) * 100.0)  # %
 
-# Convertir a listas serializables
-symbol_history = {}
-for sym, ser in symbol_series.items():
-    symbol_history[sym] = {
-        "t": list(ser["t"]),
-        "price": list(ser["price"]),
-        "plpc": list(ser["plpc"]),
-    }
+symbol_history = {sym: {"t": list(ser["t"]), "price": list(ser["price"]), "plpc": list(ser["plpc"])}
+                  for sym, ser in symbol_series.items()}
 
-# --- Serializaciones JSON seguras para HTML ---
-EQUITY_LABELS_JSON = json.dumps(equity_labels)
-EQUITY_VALUES_JSON = json.dumps(equity_values)
+# --- Serializaciones JSON seguras ---
+EQUITY_LABELS_INTRADAY_JSON = json.dumps(equity_labels_intraday)
+EQUITY_VALUES_INTRADAY_JSON = json.dumps(equity_values_intraday)
+EQUITY_LABELS_DAILY_JSON = json.dumps(equity_labels_daily)
+EQUITY_VALUES_DAILY_JSON = json.dumps(equity_values_daily)
 SYMBOL_HISTORY_JSON = json.dumps(symbol_history)
+
 POS_TBODY_HTML = "".join(
     f"<tr><td>{r['symbol']}</td>"
     f"<td>{r['qty']:.6g}</td>"
@@ -159,7 +167,6 @@ ORD_TBODY_HTML = "".join(
     for o in orders_rows
 )
 
-# KPIs
 PORTFOLIO_VALUE_TXT = f"${portfolio_value:,.2f}"
 LAST_EQUITY_TXT = f"${last_equity:,.2f}"
 CASH_TXT = f"${cash:,.2f}"
@@ -185,11 +192,7 @@ html_template = """
     }
   }
   * { box-sizing: border-box; }
-  body {
-    margin:0; background:var(--bg); color:var(--fg);
-    font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
-    padding:16px;
-  }
+  body { margin:0; background:var(--bg); color:var(--fg); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; padding:16px; }
   .container{max-width:1200px;margin:0 auto}
   header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;flex-wrap:wrap}
   h1{font-size:20px;margin:0}
@@ -225,7 +228,8 @@ html_template = """
       <div class="muted">Last update: __TIMESTAMP__ (UTC)</div>
     </div>
     <div class="toolbar">
-      <label class="muted" for="symSel">Symbol</label>
+      <button id="equityToggle">Equity: Daily</button>
+      <label class="muted" for="symSel" style="margin-left:8px">Symbol</label>
       <select id="symSel"></select>
       <button id="toggleMetric">Metric: % P/L</button>
     </div>
@@ -242,6 +246,7 @@ html_template = """
     <div class="card">
       <div class="section-title">Equity History</div>
       <div class="chartbox"><canvas id="equityChart"></canvas></div>
+      <div class="muted" style="font-size:12px;margin-top:6px">Default: Daily (one point per calendar day). Toggle to Intraday.</div>
     </div>
     <div class="card">
       <div class="section-title">Per-Symbol Performance</div>
@@ -279,25 +284,40 @@ html_template = """
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
-const equityLabels = __EQUITY_LABELS_JSON__;
-const equityValues = __EQUITY_VALUES_JSON__;
+const equityLabelsIntraday = __EQUITY_LABELS_INTRADAY_JSON__;
+const equityValuesIntraday = __EQUITY_VALUES_INTRADAY_JSON__;
+const equityLabelsDaily = __EQUITY_LABELS_DAILY_JSON__;
+const equityValuesDaily = __EQUITY_VALUES_DAILY_JSON__;
 const symbolHistory = __SYMBOL_HISTORY_JSON__;
 
 const eqCtx = document.getElementById('equityChart').getContext('2d');
-const eqChart = new Chart(eqCtx, {
-  type: 'line',
-  data: {
-    labels: equityLabels,
-    datasets: [{ label:'Portfolio Value', data: equityValues, borderWidth:2, fill:false, tension:0.25 }]
-  },
-  options: {
-    responsive:true,
-    maintainAspectRatio:false,
-    plugins:{ legend:{display:false} },
-    scales:{
-      y:{ ticks:{ callback:(v)=>'$'+v.toLocaleString() } }
-    }
+let equityMode = 'daily'; // 'daily' o 'intraday'
+function buildEquityDataset() {
+  if (equityMode === 'daily') {
+    return { labels: equityLabelsDaily, data: equityValuesDaily };
+  } else {
+    return { labels: equityLabelsIntraday, data: equityValuesIntraday };
   }
+}
+function renderEquity() {
+  const ds = buildEquityDataset();
+  if (window.eqChart) window.eqChart.destroy();
+  window.eqChart = new Chart(eqCtx, {
+    type: 'line',
+    data: { labels: ds.labels, datasets: [{ label:'Portfolio Value', data: ds.data, borderWidth:2, fill:false, tension:0.25 }] },
+    options: {
+      responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{display:false} },
+      scales:{ y:{ ticks:{ callback:(v)=>'$'+v.toLocaleString() } } }
+    }
+  });
+}
+renderEquity();
+
+document.getElementById('equityToggle').addEventListener('click', ()=>{
+  equityMode = (equityMode === 'daily') ? 'intraday' : 'daily';
+  document.getElementById('equityToggle').textContent = 'Equity: ' + (equityMode === 'daily' ? 'Daily' : 'Intraday');
+  renderEquity();
 });
 
 // --- Per-symbol chart ---
@@ -329,21 +349,11 @@ function renderSymbolChart(sym) {
   if (symChart) symChart.destroy();
   symChart = new Chart(symCtx, {
     type: 'line',
-    data: {
-      labels,
-      datasets: [{ label: sym + ' ' + label, data, borderWidth:2, fill:false, tension:0.25 }]
-    },
+    data: { labels, datasets: [{ label: sym + ' ' + label, data, borderWidth:2, fill:false, tension:0.25 }] },
     options: {
-      responsive:true,
-      maintainAspectRatio:false,
+      responsive:true, maintainAspectRatio:false,
       plugins:{ legend:{display:false} },
-      scales:{
-        y:{
-          ticks:{
-            callback:(v)=> metric==='plpc' ? v.toFixed(2)+'%' : '$'+v.toLocaleString()
-          }
-        }
-      }
+      scales:{ y:{ ticks:{ callback:(v)=> metric==='plpc' ? v.toFixed(2)+'%' : '$'+v.toLocaleString() } } }
     }
   });
 }
@@ -355,26 +365,27 @@ toggleBtn.addEventListener('click', ()=>{
   renderSymbolChart(symSel.value);
 });
 
-if (symbols.length > 0) {
-  symSel.value = symbols[0];
-  renderSymbolChart(symbols[0]);
-}
+if (symbols.length > 0) { symSel.value = symbols[0]; renderSymbolChart(symbols[0]); }
 </script>
 </body>
 </html>
 """
 
 # --- Reemplazos de tokens ---
-html = html_template.replace("__TIMESTAMP__", timestamp)\
-    .replace("__PORTFOLIO_VALUE__", PORTFOLIO_VALUE_TXT)\
-    .replace("__LAST_EQUITY__", LAST_EQUITY_TXT)\
-    .replace("__CASH__", CASH_TXT)\
-    .replace("__BUYING_POWER__", BUYING_POWER_TXT)\
-    .replace("__POS_TBODY__", POS_TBODY_HTML)\
-    .replace("__ORD_TBODY__", ORD_TBODY_HTML)\
-    .replace("__EQUITY_LABELS_JSON__", EQUITY_LABELS_JSON)\
-    .replace("__EQUITY_VALUES_JSON__", EQUITY_VALUES_JSON)\
+html = (html_template
+    .replace("__TIMESTAMP__", timestamp)
+    .replace("__PORTFOLIO_VALUE__", PORTFOLIO_VALUE_TXT)
+    .replace("__LAST_EQUITY__", LAST_EQUITY_TXT)
+    .replace("__CASH__", CASH_TXT)
+    .replace("__BUYING_POWER__", BUYING_POWER_TXT)
+    .replace("__POS_TBODY__", POS_TBODY_HTML)
+    .replace("__ORD_TBODY__", ORD_TBODY_HTML)
+    .replace("__EQUITY_LABELS_INTRADAY_JSON__", json.dumps(equity_labels_intraday))
+    .replace("__EQUITY_VALUES_INTRADAY_JSON__", json.dumps(equity_values_intraday))
+    .replace("__EQUITY_LABELS_DAILY_JSON__", json.dumps(equity_labels_daily))
+    .replace("__EQUITY_VALUES_DAILY_JSON__", json.dumps(equity_values_daily))
     .replace("__SYMBOL_HISTORY_JSON__", SYMBOL_HISTORY_JSON)
+)
 
 OUT_HTML.write_text(html, encoding="utf-8")
-print(f"Wrote {OUT_HTML} and updated {HIST_EQUITY} / {HIST_POS}")
+print(f"Wrote {OUT_HTML} (daily+intraday) and updated {HIST_EQUITY} / {HIST_POS}")
