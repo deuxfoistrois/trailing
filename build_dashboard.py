@@ -1,4 +1,5 @@
-import os, json, csv, pathlib, datetime
+import os, csv, json, pathlib, datetime
+from collections import defaultdict, deque
 from decimal import Decimal
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import GetOrdersRequest
@@ -15,48 +16,63 @@ DOCS = ROOT / "docs"
 DATA = ROOT / "data"
 DOCS.mkdir(exist_ok=True)
 DATA.mkdir(exist_ok=True)
-HIST = DATA / "equity_history.csv"
+
+HIST_EQUITY = DATA / "equity_history.csv"
+HIST_POS = DATA / "pos_history.csv"    # NUEVO: histórico por símbolo
 OUT_HTML = DOCS / "index.html"
 
-# --- Utilidades ---
-def d2(x):
-    return float(Decimal(str(x)).quantize(Decimal("0.01")))
+def d2(x): return float(Decimal(str(x)).quantize(Decimal("0.01")))
+def now_iso(): return datetime.datetime.utcnow().replace(microsecond=0).isoformat()+"Z"
 
-def now_iso():
-    return datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-
-# --- Datos de cuenta/posiciones/ordenes ---
+# --- Datos de cuenta/posiciones/órdenes ---
 account = client.get_account()
 positions = client.get_all_positions()
 open_orders = client.get_orders(filter=GetOrdersRequest(status=QueryOrderStatus.OPEN))
 
 timestamp = now_iso()
-portfolio_value = float(account.portfolio_value)  # valor tiempo-real
+portfolio_value = float(account.portfolio_value)
 cash = float(account.cash)
 buying_power = float(account.buying_power)
 last_equity = float(account.last_equity) if account.last_equity is not None else portfolio_value
 
-# --- Actualizar historial de equity ---
-new_row = [timestamp, f"{portfolio_value:.2f}", f"{last_equity:.2f}", f"{cash:.2f}", f"{buying_power:.2f}"]
-write_header = not HIST.exists()
-append = True
-if HIST.exists():
+# --- Actualizar equity_history.csv ---
+write_header_eq = not HIST_EQUITY.exists()
+append_eq = True
+if HIST_EQUITY.exists():
     try:
-        with HIST.open("r", newline="") as f:
+        with HIST_EQUITY.open("r", newline="") as f:
             rows = list(csv.reader(f))
             if rows and rows[-1] and rows[-1][0] == timestamp:
-                append = False
+                append_eq = False
     except Exception:
         pass
 
-if append:
-    with HIST.open("a", newline="") as f:
+if append_eq:
+    with HIST_EQUITY.open("a", newline="") as f:
         w = csv.writer(f)
-        if write_header:
+        if write_header_eq:
             w.writerow(["timestamp","portfolio_value","last_equity","cash","buying_power"])
-        w.writerow(new_row)
+        w.writerow([timestamp, f"{portfolio_value:.2f}", f"{last_equity:.2f}", f"{cash:.2f}", f"{buying_power:.2f}"])
 
-# --- Preparar datos para HTML ---
+# --- Actualizar pos_history.csv (una fila por símbolo) ---
+write_header_pos = not HIST_POS.exists()
+with HIST_POS.open("a", newline="") as f:
+    w = csv.writer(f)
+    if write_header_pos:
+        w.writerow(["timestamp","symbol","qty","avg_entry","current","market_value","unreal_pl","unreal_plpc"])
+    for p in positions:
+        w.writerow([
+            timestamp,
+            p.symbol,
+            f"{float(p.qty):.8f}",
+            f"{d2(p.avg_entry_price):.2f}",
+            f"{d2(p.current_price):.2f}",
+            f"{d2(p.market_value):.2f}",
+            f"{d2(p.unrealized_pl) if p.unrealized_pl is not None else 0.0:.2f}",
+            f"{float(p.unrealized_plpc) if p.unrealized_plpc is not None else 0.0:.6f}",
+        ])
+
+# --- Preparar datos actuales para tablas ---
 pos_rows = []
 for p in positions:
     pos_rows.append({
@@ -81,16 +97,40 @@ for o in open_orders:
         "submitted_at": o.submitted_at.isoformat() if o.submitted_at else "",
     })
 
-# Cargar historial para el gráfico
-hist_labels, hist_values = [], []
-if HIST.exists():
-    with HIST.open("r", newline="") as f:
+# --- Cargar históricos para gráficos ---
+equity_labels, equity_values = [], []
+if HIST_EQUITY.exists():
+    with HIST_EQUITY.open("r", newline="") as f:
         r = csv.DictReader(f)
         for row in r:
-            hist_labels.append(row["timestamp"])
-            hist_values.append(float(row["portfolio_value"]))
+            equity_labels.append(row["timestamp"])
+            equity_values.append(float(row["portfolio_value"]))
 
-# --- HTML (estático) ---
+# Por símbolo: guardamos hasta N puntos recientes para no inflar el HTML
+MAX_POINTS_PER_SYMBOL = 500
+symbol_series = defaultdict(lambda: {"t": deque(maxlen=MAX_POINTS_PER_SYMBOL),
+                                     "price": deque(maxlen=MAX_POINTS_PER_SYMBOL),
+                                     "plpc": deque(maxlen=MAX_POINTS_PER_SYMBOL)})
+
+if HIST_POS.exists():
+    with HIST_POS.open("r", newline="") as f:
+        r = csv.DictReader(f)
+        for row in r:
+            sym = row["symbol"]
+            symbol_series[sym]["t"].append(row["timestamp"])
+            symbol_series[sym]["price"].append(float(row["current"]))
+            symbol_series[sym]["plpc"].append(float(row["unreal_plpc"]) * 100.0)  # a %
+
+# Pasar a listas serializables
+symbol_history = {}
+for sym, ser in symbol_series.items():
+    symbol_history[sym] = {
+        "t": list(ser["t"]),
+        "price": list(ser["price"]),
+        "plpc": list(ser["plpc"]),
+    }
+
+# --- HTML/CSS responsive + gráfico por símbolo ---
 html = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -98,100 +138,196 @@ html = f"""<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Alpaca Paper Dashboard</title>
 <style>
-  body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 24px; }}
-  h1 {{ margin: 0 0 8px; }}
-  .meta {{ margin-bottom: 16px; }}
-  table {{ border-collapse: collapse; width: 100%; margin: 16px 0; }}
-  th, td {{ border: 1px solid #ddd; padding: 8px; font-size: 14px; text-align: right; }}
-  th {{ background: #f6f6f6; text-align: right; }}
-  th:first-child, td:first-child {{ text-align: left; }}
-  .pos {{ overflow-x:auto; }}
-  .pill {{ display:inline-block; padding:2px 8px; border-radius: 12px; border:1px solid #ccc; font-size:12px; }}
-  .green {{ color:#0a0; }}
-  .red {{ color:#a00; }}
-  .grid {{ display:grid; grid-template-columns: repeat(auto-fit, minmax(220px,1fr)); gap: 12px; margin: 16px 0; }}
-  .card {{ border:1px solid #ddd; border-radius:8px; padding:12px; }}
-  .muted {{ color:#666; }}
-  canvas {{ max-width: 100%; height: 320px; }}
+  :root {{
+    --bg: #0b0d10; --card: #111418; --muted: #9aa4ad; --fg: #e6eef5; --border: #222831;
+    --pos: #14b86e; --neg: #ff5a5f; --accent: #60a5fa;
+  }}
+  @media (prefers-color-scheme: light) {{
+    :root {{
+      --bg:#f7f8fa; --card:#ffffff; --muted:#5b6670; --fg:#0b141a; --border:#dfe5ec;
+      --pos:#0a7f4f; --neg:#c03a3e; --accent:#2563eb;
+    }}
+  }}
+  * {{ box-sizing: border-box; }}
+  body {{
+    margin:0; background:var(--bg); color:var(--fg);
+    font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+    padding:16px;
+  }}
+  .container{{max-width:1200px;margin:0 auto}}
+  header{{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;flex-wrap:wrap}}
+  h1{{font-size:20px;margin:0}}
+  .muted{{color:var(--muted)}}
+  .grid{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}}
+  @media (max-width:900px){{.grid{{grid-template-columns:repeat(2,minmax(0,1fr))}}}}
+  @media (max-width:560px){{.grid{{grid-template-columns:1fr}}}}
+  .card{{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px}}
+  .kpi .label{{font-size:12px;color:var(--muted);margin-bottom:6px}}
+  .kpi .value{{font-size:22px;font-weight:600}}
+  .section-title{{font-size:16px;margin:14px 0 6px 0}}
+  .tablewrap{{overflow:auto;border:1px solid var(--border);border-radius:12px}}
+  table{{border-collapse:separate;border-spacing:0;width:100%;min-width:680px;background:var(--card)}}
+  th,td{{padding:10px 12px;border-bottom:1px solid var(--border);font-size:14px;text-align:right;white-space:nowrap}}
+  th:first-child,td:first-child{{text-align:left}}
+  thead th{{position:sticky;top:0;background:var(--card);z-index:1}}
+  tbody tr:hover{{background:rgba(96,165,250,.08)}}
+  .pos{{color:var(--pos)}} .neg{{color:var(--neg)}}
+  .row{{display:grid;grid-template-columns:2fr 1fr;gap:12px}}
+  @media (max-width:900px){{.row{{grid-template-columns:1fr}}}}
+  .toolbar{{display:flex;gap:8px;align-items:center;flex-wrap:wrap}}
+  select,button{{padding:8px 10px;border-radius:10px;border:1px solid var(--border);background:var(--card);color:var(--fg)}}
+  .foot{{margin-top:12px;color:var(--muted);font-size:12px}}
+  .chartbox{{height:320px}}
+  @media (max-width:560px){{.chartbox{{height:260px}}}}
 </style>
 </head>
 <body>
+<div class="container">
+  <header>
+    <div>
+      <h1>Alpaca Paper Dashboard</h1>
+      <div class="muted">Last update: {timestamp} (UTC)</div>
+    </div>
+    <div class="toolbar">
+      <label class="muted" for="symSel">Symbol</label>
+      <select id="symSel"></select>
+      <button id="toggleMetric">Metric: % P/L</button>
+    </div>
+  </header>
 
-<h1>Alpaca Paper Dashboard</h1>
-<div class="meta muted">Last update: {timestamp} (UTC)</div>
+  <div class="grid">
+    <div class="card kpi"><div class="label">Portfolio Value</div><div class="value">${portfolio_value:,.2f}</div></div>
+    <div class="card kpi"><div class="label">Last Equity (prev close)</div><div class="value">${last_equity:,.2f}</div></div>
+    <div class="card kpi"><div class="label">Cash</div><div class="value">${cash:,.2f}</div></div>
+    <div class="card kpi"><div class="label">Buying Power</div><div class="value">${buying_power:,.2f}</div></div>
+  </div>
 
-<div class="grid">
-  <div class="card"><div class="muted">Portfolio Value</div><div style="font-size:22px;">${portfolio_value:,.2f}</div></div>
-  <div class="card"><div class="muted">Last Equity (prev close)</div><div style="font-size:22px;">${last_equity:,.2f}</div></div>
-  <div class="card"><div class="muted">Cash</div><div style="font-size:22px;">${cash:,.2f}</div></div>
-  <div class="card"><div class="muted">Buying Power</div><div style="font-size:22px;">${buying_power:,.2f}</div></div>
-</div>
+  <div class="row">
+    <div class="card">
+      <div class="section-title">Equity History</div>
+      <div class="chartbox"><canvas id="equityChart"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="section-title">Per-Symbol Performance</div>
+      <div class="muted" style="font-size:13px;margin-bottom:6px">Switch between % P/L and Price</div>
+      <div class="chartbox"><canvas id="symbolChart"></canvas></div>
+    </div>
+  </div>
 
-<h2>Equity History</h2>
-<canvas id="equityChart"></canvas>
+  <div class="section-title">Positions</div>
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th>Symbol</th><th>Qty</th><th>Avg Entry</th><th>Current</th><th>Market Value</th><th>Unreal P/L</th><th>Unreal P/L %</th></tr>
+      </thead>
+      <tbody>
+        {"".join(f"<tr><td>{r['symbol']}</td><td>{r['qty']:.6g}</td><td>${r['avg_entry']:,.2f}</td><td>${r['current']:,.2f}</td><td>${r['market_value']:,.2f}</td><td class='{'pos' if r['unreal_pl']>=0 else 'neg'}'>${r['unreal_pl']:,.2f}</td><td class='{'pos' if r['unreal_plpc']>=0 else 'neg'}'>{r['unreal_plpc']*100:.2f}%</td></tr>" for r in pos_rows)}
+      </tbody>
+    </table>
+  </div>
 
-<h2>Positions</h2>
-<div class="pos">
-<table>
-  <thead>
-    <tr>
-      <th>Symbol</th><th>Qty</th><th>Avg Entry</th><th>Current</th><th>Market Value</th><th>Unreal P/L</th><th>Unreal P/L %</th>
-    </tr>
-  </thead>
-  <tbody>
-    {''.join(f"<tr><td>{r['symbol']}</td><td>{r['qty']:.6g}</td><td>${r['avg_entry']:,.2f}</td><td>${r['current']:,.2f}</td><td>${r['market_value']:,.2f}</td><td class='{'green' if r['unreal_pl']>=0 else 'red'}'>${r['unreal_pl']:,.2f}</td><td class='{'green' if r['unreal_plpc']>=0 else 'red'}'>{r['unreal_plpc']*100:.2f}%</td></tr>" for r in pos_rows)}
-  </tbody>
-</table>
-</div>
+  <div class="section-title">Open Orders</div>
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th>ID</th><th>Symbol</th><th>Side</th><th>Type</th><th>Qty</th><th>Status</th><th>Submitted</th></tr>
+      </thead>
+      <tbody>
+        {"".join(f"<tr><td class='muted'>{o['id']}</td><td>{o['symbol']}</td><td>{o['side']}</td><td>{o['type']}</td><td>{o['qty'] if o['qty'] is not None else ''}</td><td>{o['status']}</td><td>{o['submitted_at']}</td></tr>" for o in orders_rows)}
+      </tbody>
+    </table>
+  </div>
 
-<h2>Open Orders</h2>
-<div class="pos">
-<table>
-  <thead>
-    <tr><th>ID</th><th>Symbol</th><th>Side</th><th>Type</th><th>Qty</th><th>Status</th><th>Submitted</th></tr>
-  </thead>
-  <tbody>
-    {''.join(f"<tr><td class='muted'>{o['id']}</td><td>{o['symbol']}</td><td>{o['side']}</td><td>{o['type']}</td><td>{o['qty'] if o['qty'] is not None else ''}</td><td>{o['status']}</td><td>{o['submitted_at']}</td></tr>" for o in orders_rows)}
-  </tbody>
-</table>
+  <div class="foot">Data: Alpaca Paper API · Static page updated by GitHub Actions · Mobile-friendly.</div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
-const labels = {json.dumps(hist_labels)};
-const data = {json.dumps(hist_values)};
-const ctx = document.getElementById('equityChart').getContext('2d');
-new Chart(ctx, {{
+const equityLabels = {json.dumps(equity_labels)};
+const equityValues = {json.dumps(equity_values)};
+const symbolHistory = {json.dumps(symbol_history)}; // {{ symbol: {{t:[], price:[], plpc:[]}} }}
+
+const eqCtx = document.getElementById('equityChart').getContext('2d');
+const eqChart = new Chart(eqCtx, {{
   type: 'line',
   data: {{
-    labels,
-    datasets: [{{
-      label: 'Portfolio Value',
-      data: data,
-      borderWidth: 2,
-      fill: false,
-      tension: 0.1
-    }}]
+    labels: equityLabels,
+    datasets: [{{ label:'Portfolio Value', data: equityValues, borderWidth:2, fill:false, tension:0.25 }}]
   }},
   options: {{
-    responsive: true,
-    scales: {{
-      y: {{
-        ticks: {{
-          callback: (v) => '$' + v.toLocaleString()
-        }}
-      }}
-    }},
-    plugins: {{
-      legend: {{ display: false }}
+    responsive:true,
+    maintainAspectRatio:false,
+    plugins:{{ legend:{{display:false}} }},
+    scales:{{
+      y:{{ ticks:{{ callback:(v)=>'$'+v.toLocaleString() }} }}
     }}
   }}
 }});
-</script>
 
+// --- Per-symbol chart ---
+const symSel = document.getElementById('symSel');
+const toggleBtn = document.getElementById('toggleMetric');
+let metric = 'plpc'; // 'plpc' (%) o 'price'
+
+const symbols = Object.keys(symbolHistory).sort();
+for (const s of symbols) {{
+  const opt = document.createElement('option');
+  opt.value = s; opt.textContent = s;
+  symSel.appendChild(opt);
+}}
+if (symbols.length === 0) {{
+  const opt = document.createElement('option');
+  opt.value = ''; opt.textContent = 'No positions';
+  symSel.appendChild(opt);
+}}
+
+const symCtx = document.getElementById('symbolChart').getContext('2d');
+let symChart = null;
+
+function renderSymbolChart(sym) {{
+  if (!sym || !symbolHistory[sym]) return;
+  const H = symbolHistory[sym];
+  const labels = H.t;
+  const data = (metric === 'plpc') ? H.plpc : H.price;
+  const label = (metric === 'plpc') ? '% P/L' : 'Price';
+  if (symChart) symChart.destroy();
+  symChart = new Chart(symCtx, {{
+    type: 'line',
+    data: {{
+      labels,
+      datasets: [{{ label: sym + ' ' + label, data, borderWidth:2, fill:false, tension:0.25 }}]
+    }},
+    options: {{
+      responsive:true,
+      maintainAspectRatio:false,
+      plugins:{{ legend:{{display:false}} }},
+      scales:{{
+        y:{{
+          ticks:{{
+            callback:(v)=> metric==='plpc' ? v.toFixed(2)+'%' : '$'+v.toLocaleString()
+          }}
+        }}
+      }}
+    }}
+  }});
+}
+
+symSel.addEventListener('change', ()=> renderSymbolChart(symSel.value));
+toggleBtn.addEventListener('click', ()=>{
+  metric = (metric === 'plpc') ? 'price' : 'plpc';
+  toggleBtn.textContent = 'Metric: ' + (metric === 'plpc' ? '% P/L' : 'Price');
+  renderSymbolChart(symSel.value);
+});
+
+// render inicial
+if (symbols.length > 0) {{
+  symSel.value = symbols[0];
+  renderSymbolChart(symbols[0]);
+}}
+</script>
 </body>
 </html>
 """
 
 OUT_HTML.write_text(html, encoding="utf-8")
-print(f"Wrote {OUT_HTML} and updated {HIST}")
+print(f"Wrote {OUT_HTML} and updated {HIST_EQUITY} / {HIST_POS}")
