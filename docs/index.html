@@ -17,11 +17,7 @@
     }
   }
   * { box-sizing: border-box; }
-  body {
-    margin:0; background:var(--bg); color:var(--fg);
-    font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
-    padding:16px;
-  }
+  body { margin:0; background:var(--bg); color:var(--fg); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; padding:16px; }
   .container{max-width:1200px;margin:0 auto}
   header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;flex-wrap:wrap}
   h1{font-size:20px;margin:0}
@@ -54,10 +50,11 @@
   <header>
     <div>
       <h1>Alpaca Paper Dashboard</h1>
-      <div class="muted">Last update: 2025-09-27T22:42:31Z (UTC)</div>
+      <div class="muted">Last update: 2025-09-27T22:48:55Z (UTC)</div>
     </div>
     <div class="toolbar">
-      <label class="muted" for="symSel">Symbol</label>
+      <button id="equityToggle">Equity: Daily</button>
+      <label class="muted" for="symSel" style="margin-left:8px">Symbol</label>
       <select id="symSel"></select>
       <button id="toggleMetric">Metric: % P/L</button>
     </div>
@@ -74,6 +71,7 @@
     <div class="card">
       <div class="section-title">Equity History</div>
       <div class="chartbox"><canvas id="equityChart"></canvas></div>
+      <div class="muted" style="font-size:12px;margin-top:6px">Default: Daily (one point per calendar day). Toggle to Intraday.</div>
     </div>
     <div class="card">
       <div class="section-title">Per-Symbol Performance</div>
@@ -111,25 +109,40 @@
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
-const equityLabels = ["2025-09-27T22:25:04Z", "2025-09-27T22:42:31Z"];
-const equityValues = [100127.3, 100127.3];
-const symbolHistory = {"ANIP": {"t": ["2025-09-27T22:42:31Z"], "price": [93.05], "plpc": [-2.1042]}, "APH": {"t": ["2025-09-27T22:42:31Z"], "price": [122.6], "plpc": [-0.43039999999999995]}, "CENX": {"t": ["2025-09-27T22:42:31Z"], "price": [27.99], "plpc": [7.364800000000001]}, "EAT": {"t": ["2025-09-27T22:42:31Z"], "price": [132.19], "plpc": [-4.3210999999999995]}};
+const equityLabelsIntraday = ["2025-09-27T22:25:04Z", "2025-09-27T22:42:31Z", "2025-09-27T22:48:55Z"];
+const equityValuesIntraday = [100127.3, 100127.3, 100127.3];
+const equityLabelsDaily = ["2025-09-27"];
+const equityValuesDaily = [100127.3];
+const symbolHistory = {"ANIP": {"t": ["2025-09-27T22:42:31Z", "2025-09-27T22:48:55Z"], "price": [93.05, 93.05], "plpc": [-2.1042, -2.1042]}, "APH": {"t": ["2025-09-27T22:42:31Z", "2025-09-27T22:48:55Z"], "price": [122.6, 122.6], "plpc": [-0.43039999999999995, -0.43039999999999995]}, "CENX": {"t": ["2025-09-27T22:42:31Z", "2025-09-27T22:48:55Z"], "price": [27.99, 27.99], "plpc": [7.364800000000001, 7.364800000000001]}, "EAT": {"t": ["2025-09-27T22:42:31Z", "2025-09-27T22:48:55Z"], "price": [132.19, 132.19], "plpc": [-4.3210999999999995, -4.3210999999999995]}};
 
 const eqCtx = document.getElementById('equityChart').getContext('2d');
-const eqChart = new Chart(eqCtx, {
-  type: 'line',
-  data: {
-    labels: equityLabels,
-    datasets: [{ label:'Portfolio Value', data: equityValues, borderWidth:2, fill:false, tension:0.25 }]
-  },
-  options: {
-    responsive:true,
-    maintainAspectRatio:false,
-    plugins:{ legend:{display:false} },
-    scales:{
-      y:{ ticks:{ callback:(v)=>'$'+v.toLocaleString() } }
-    }
+let equityMode = 'daily'; // 'daily' o 'intraday'
+function buildEquityDataset() {
+  if (equityMode === 'daily') {
+    return { labels: equityLabelsDaily, data: equityValuesDaily };
+  } else {
+    return { labels: equityLabelsIntraday, data: equityValuesIntraday };
   }
+}
+function renderEquity() {
+  const ds = buildEquityDataset();
+  if (window.eqChart) window.eqChart.destroy();
+  window.eqChart = new Chart(eqCtx, {
+    type: 'line',
+    data: { labels: ds.labels, datasets: [{ label:'Portfolio Value', data: ds.data, borderWidth:2, fill:false, tension:0.25 }] },
+    options: {
+      responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{display:false} },
+      scales:{ y:{ ticks:{ callback:(v)=>'$'+v.toLocaleString() } } }
+    }
+  });
+}
+renderEquity();
+
+document.getElementById('equityToggle').addEventListener('click', ()=>{
+  equityMode = (equityMode === 'daily') ? 'intraday' : 'daily';
+  document.getElementById('equityToggle').textContent = 'Equity: ' + (equityMode === 'daily' ? 'Daily' : 'Intraday');
+  renderEquity();
 });
 
 // --- Per-symbol chart ---
@@ -161,21 +174,11 @@ function renderSymbolChart(sym) {
   if (symChart) symChart.destroy();
   symChart = new Chart(symCtx, {
     type: 'line',
-    data: {
-      labels,
-      datasets: [{ label: sym + ' ' + label, data, borderWidth:2, fill:false, tension:0.25 }]
-    },
+    data: { labels, datasets: [{ label: sym + ' ' + label, data, borderWidth:2, fill:false, tension:0.25 }] },
     options: {
-      responsive:true,
-      maintainAspectRatio:false,
+      responsive:true, maintainAspectRatio:false,
       plugins:{ legend:{display:false} },
-      scales:{
-        y:{
-          ticks:{
-            callback:(v)=> metric==='plpc' ? v.toFixed(2)+'%' : '$'+v.toLocaleString()
-          }
-        }
-      }
+      scales:{ y:{ ticks:{ callback:(v)=> metric==='plpc' ? v.toFixed(2)+'%' : '$'+v.toLocaleString() } } }
     }
   });
 }
@@ -187,10 +190,7 @@ toggleBtn.addEventListener('click', ()=>{
   renderSymbolChart(symSel.value);
 });
 
-if (symbols.length > 0) {
-  symSel.value = symbols[0];
-  renderSymbolChart(symbols[0]);
-}
+if (symbols.length > 0) { symSel.value = symbols[0]; renderSymbolChart(symbols[0]); }
 </script>
 </body>
 </html>
