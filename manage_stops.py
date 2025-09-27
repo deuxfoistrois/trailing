@@ -22,7 +22,8 @@ TRAIL_PERCENT = 8.0                # trailing 8%
 STOP_LOSS_PORCENTAJE = 0.10        # stop fijo -10%
 CERRAR_SOLO_LARGOS = True
 CANCELAR_STOP_FIJO_AL_PONER_TRAILING = True
-FORZAR_ENTEROS_PARA_GTC = False    # si True: redondea qty a entero para usar GTC en vez de DAY
+# Redondear la qty para el trailing (porque NO se permite trailing con fraccionales)
+ROUND_DOWN_TRAILING_QTY_TO_INT = True
 
 # ===== Conexión (paper) =====
 API_KEY = os.environ["APCA_API_KEY_ID"]
@@ -36,8 +37,8 @@ def _round2(x: float) -> float:
 def es_fraccional(qty: float) -> bool:
     return int(qty) != qty
 
-def tif_para_qty(qty: float) -> TimeInForce:
-    # Alpaca exige DAY para órdenes fraccionales; GTC permitido si qty entera
+def tif_para_stop(qty: float) -> TimeInForce:
+    # Fraccional => DAY (requisito de Alpaca), Entero => GTC
     return TimeInForce.DAY if es_fraccional(qty) else TimeInForce.GTC
 
 def _ordenes_abiertas_symbol(symbol: str):
@@ -65,43 +66,53 @@ def cancelar_orden(order_id: str):
 
 # ===== Envío de órdenes =====
 def enviar_stop_fijo(symbol: str, qty: float, stop_price: float):
-    q = qty
-    tif = tif_para_qty(q)
-    if FORZAR_ENTEROS_PARA_GTC and es_fraccional(q):
-        q = float(floor(q))
-        tif = TimeInForce.GTC
-        if q <= 0:
-            print(f"{symbol}: qty entera = 0, no envío stop fijo.")
-            return
-    stop_req = StopOrderRequest(
-        symbol=symbol,
-        side=OrderSide.SELL,
-        qty=q,
-        stop_price=_round2(stop_price),
-        time_in_force=tif,
-    )
-    resp = client.submit_order(order_data=stop_req)
-    print(f"STOP FIJO enviado: {symbol} qty={q} tif={tif.value} stop={_round2(stop_price)} id={resp.id}")
+    try:
+        tif = tif_para_stop(qty)
+        stop_req = StopOrderRequest(
+            symbol=symbol,
+            side=OrderSide.SELL,
+            qty=qty,
+            stop_price=_round2(stop_price),
+            time_in_force=tif,
+        )
+        resp = client.submit_order(order_data=stop_req)
+        print(f"STOP FIJO enviado: {symbol} qty={qty} tif={tif.value} stop={_round2(stop_price)} id={resp.id}")
+    except Exception as e:
+        print(f"{symbol}: error al enviar STOP FIJO → {e}")
 
 def enviar_trailing(symbol: str, qty: float, trail_percent: float):
-    q = qty
-    tif = tif_para_qty(q)
-    if FORZAR_ENTEROS_PARA_GTC and es_fraccional(q):
-        q = float(floor(q))
-        tif = TimeInForce.GTC
-        if q <= 0:
-            print(f"{symbol}: qty entera = 0, no envío trailing.")
-            return
-    tr_req = TrailingStopOrderRequest(
-        symbol=symbol,
-        side=OrderSide.SELL,
-        qty=q,
-        time_in_force=tif,
-        trail_percent=trail_percent,
-    )
-    resp = client.submit_order(order_data=tr_req)
-    print(f"TRAILING enviado: {symbol} qty={q} tif={tif.value} trail%={trail_percent} id={resp.id}")
-    return resp.id
+    """
+    Trailing SOLO con cantidad entera. Si la posición es fraccional:
+      - Si ROUND_DOWN_TRAILING_QTY_TO_INT=True → usa floor(qty).
+      - Si queda 0 → no envía trailing.
+    El resto de la posición queda protegido con el stop fijo -10%.
+    """
+    try:
+        q = qty
+        if es_fraccional(q):
+            if ROUND_DOWN_TRAILING_QTY_TO_INT:
+                q = float(floor(q))
+                if q <= 0:
+                    print(f"{symbol}: qty entera=0 (posición fraccional muy chica). No envío trailing.")
+                    return None
+            else:
+                print(f"{symbol}: posición fraccional. Alpaca no permite trailing → omitido.")
+                return None
+
+        # qty entera → GTC permitido para trailing
+        tr_req = TrailingStopOrderRequest(
+            symbol=symbol,
+            side=OrderSide.SELL,
+            qty=q,
+            time_in_force=TimeInForce.GTC,
+            trail_percent=trail_percent,
+        )
+        resp = client.submit_order(order_data=tr_req)
+        print(f"TRAILING enviado: {symbol} qty={q} tif=gtc trail%={trail_percent} id={resp.id}")
+        return resp.id
+    except Exception as e:
+        print(f"{symbol}: error al enviar TRAILING → {e}")
+        return None
 
 # ===== Main =====
 def main():
@@ -134,11 +145,12 @@ def main():
         if plpc is not None and plpc >= ACTIVACION_MIN_GANANCIA:
             if not tiene_trailing(symbol):
                 tr_id = enviar_trailing(symbol, qty, TRAIL_PERCENT)
-                nuevas_ordenes += 1
-                if CANCELAR_STOP_FIJO_AL_PONER_TRAILING:
-                    sid = id_stop_fijo(symbol)
-                    if sid:
-                        cancelar_orden(sid)
+                if tr_id:
+                    nuevas_ordenes += 1
+                    if CANCELAR_STOP_FIJO_AL_PONER_TRAILING:
+                        sid = id_stop_fijo(symbol)
+                        if sid:
+                            cancelar_orden(sid)
             else:
                 print(f"{symbol}: trailing ya existe.")
         else:
