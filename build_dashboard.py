@@ -1,7 +1,8 @@
-# build_dashboard.py
+# build_dashboard.py — dashboard con trailing detail (High-Water & Dynamic Stop)
 import os, csv, json, pathlib, datetime
 from collections import defaultdict, deque
 from decimal import Decimal
+
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import GetOrdersRequest
 from alpaca.trading.enums import QueryOrderStatus, OrderType
@@ -89,13 +90,9 @@ for p in positions:
         "unreal_plpc": float(p.unrealized_plpc) if p.unrealized_plpc is not None else 0.0,
     })
 
-# Órdenes abiertas (ya las teníamos). Además, armamos vistas para trailing y stop fijos.
-orders_rows = []
-trailing_rows = []
-fixed_stop_rows = []
-
+# Órdenes abiertas → trailing / stop / general
+orders_rows, trailing_rows, fixed_stop_rows = [], [], []
 for o in open_orders:
-    # Campos genéricos
     oid = o.id
     sym = o.symbol
     side = getattr(o, "side", None).value if getattr(o, "side", None) else ""
@@ -109,24 +106,22 @@ for o in open_orders:
         "qty": qty, "status": status, "submitted_at": submitted_at
     })
 
-    # Trailing: agregar columnas trail_percent / trail_price si existen
     if getattr(o, "type", None) == OrderType.TRAILING_STOP:
         trail_percent = getattr(o, "trail_percent", None)
-        trail_price = getattr(o, "trail_price", None)
-        tp = float(trail_percent) if trail_percent is not None else None
-        tpr = d2(trail_price) if trail_price is not None else None
+        trail_price = getattr(o, "trail_price", None)  # puede venir None en paper
         trailing_rows.append({
-            "id": oid, "symbol": sym, "side": side, "qty": qty,
-            "trail_percent": tp, "trail_price": tpr, "status": status, "submitted_at": submitted_at
+            "id": oid, "symbol": sym, "qty": qty,
+            "trail_percent": float(trail_percent) if trail_percent is not None else None,
+            "trail_price": d2(trail_price) if trail_price is not None else None,
+            "status": status, "submitted_at": submitted_at
         })
 
-    # Stop fijo: type == STOP
     if getattr(o, "type", None) == OrderType.STOP:
         stop_price = getattr(o, "stop_price", None)
-        sp = d2(stop_price) if stop_price is not None else None
         fixed_stop_rows.append({
-            "id": oid, "symbol": sym, "side": side, "qty": qty,
-            "stop_price": sp, "status": status, "submitted_at": submitted_at
+            "id": oid, "symbol": sym, "qty": qty,
+            "stop_price": d2(stop_price) if stop_price is not None else None,
+            "status": status, "submitted_at": submitted_at
         })
 
 # --- Cargar históricos para gráficos ---
@@ -149,8 +144,8 @@ if HIST_EQUITY.exists():
 equity_labels_daily = sorted(daily_last_by_date.keys())
 equity_values_daily = [daily_last_by_date[d] for d in equity_labels_daily]
 
-# Por símbolo (para gráfico individual)
-MAX_POINTS_PER_SYMBOL = 500
+# Por símbolo: históricos para gráfico individual + para trailing detail
+MAX_POINTS_PER_SYMBOL = 5000
 symbol_series = defaultdict(lambda: {"t": deque(maxlen=MAX_POINTS_PER_SYMBOL),
                                      "price": deque(maxlen=MAX_POINTS_PER_SYMBOL),
                                      "plpc": deque(maxlen=MAX_POINTS_PER_SYMBOL)})
@@ -166,12 +161,57 @@ if HIST_POS.exists():
 symbol_history = {sym: {"t": list(ser["t"]), "price": list(ser["price"]), "plpc": list(ser["plpc"])}
                   for sym, ser in symbol_series.items()}
 
+# --- Trailing detail: High-Water & Dynamic Stop por símbolo ---
+trailing_detail = []
+for tr in trailing_rows:
+    sym = tr["symbol"]
+    tpct = tr["trail_percent"]
+    submitted = tr["submitted_at"]  # ISO
+    high_water = None
+    dyn_stop = None
+
+    if sym in symbol_history and tpct is not None and submitted:
+        tlist = symbol_history[sym]["t"]
+        plist = symbol_history[sym]["price"]
+        # encontrar índice desde el primer timestamp >= submitted
+        start_idx = 0
+        for i, ts in enumerate(tlist):
+            if ts >= submitted:
+                start_idx = i
+                break
+        if plist[start_idx:]:
+            high_water = max(plist[start_idx:])
+            dyn_stop = high_water * (1 - tpct / 100.0)
+
+    trailing_detail.append({
+        "symbol": sym,
+        "trail_percent": tpct,
+        "submitted_at": submitted,
+        "high_water": d2(high_water) if high_water is not None else None,
+        "dynamic_stop": d2(dyn_stop) if dyn_stop is not None else None
+    })
+
+# --- Protection por símbolo (para tabla y para columna en Positions) ---
+protection_by_symbol = defaultdict(list)
+for r in trailing_rows:
+    label = f"Trailing {r['trail_percent']}%" if r['trail_percent'] is not None else "Trailing"
+    protection_by_symbol[r["symbol"]].append(label)
+for r in fixed_stop_rows:
+    if r["stop_price"] is not None:
+        protection_by_symbol[r["symbol"]].append(f"Stop ${r['stop_price']:.2f}")
+    else:
+        protection_by_symbol[r["symbol"]].append("Stop")
+
 # --- Serializaciones JSON / HTML seguras ---
 EQUITY_LABELS_INTRADAY_JSON = json.dumps(equity_labels_intraday)
 EQUITY_VALUES_INTRADAY_JSON = json.dumps(equity_values_intraday)
 EQUITY_LABELS_DAILY_JSON = json.dumps(equity_labels_daily)
 EQUITY_VALUES_DAILY_JSON = json.dumps(equity_values_daily)
 SYMBOL_HISTORY_JSON = json.dumps(symbol_history)
+
+def prot_txt(sym):
+    labs = protection_by_symbol.get(sym, [])
+    return " · ".join(labs) if labs else "None"
 
 POS_TBODY_HTML = "".join(
     f"<tr><td>{r['symbol']}</td>"
@@ -180,7 +220,8 @@ POS_TBODY_HTML = "".join(
     f"<td>${r['current']:,.2f}</td>"
     f"<td>${r['market_value']:,.2f}</td>"
     f"<td class='{'pos' if r['unreal_pl']>=0 else 'neg'}'>${r['unreal_pl']:,.2f}</td>"
-    f"<td class='{'pos' if r['unreal_plpc']>=0 else 'neg'}'>{r['unreal_plpc']*100:.2f}%</td></tr>"
+    f"<td class='{'pos' if r['unreal_plpc']>=0 else 'neg'}'>{r['unreal_plpc']*100:.2f}%</td>"
+    f"<td>{prot_txt(r['symbol'])}</td></tr>"
     for r in pos_rows
 )
 
@@ -220,12 +261,23 @@ STOP_TBODY_HTML = "".join(
     for o in fixed_stop_rows
 )
 
+TRAIL_DETAIL_TBODY_HTML = "".join(
+    f"<tr>"
+    f"<td>{d['symbol']}</td>"
+    f"<td>{(str(d['trail_percent'])+'%') if d['trail_percent'] is not None else ''}</td>"
+    f"<td>{d['submitted_at']}</td>"
+    f"<td>{('$'+format(d['high_water'],',.2f')) if d['high_water'] is not None else ''}</td>"
+    f"<td>{('$'+format(d['dynamic_stop'],',.2f')) if d['dynamic_stop'] is not None else ''}</td>"
+    f"</tr>"
+    for d in trailing_detail
+)
+
 PORTFOLIO_VALUE_TXT = f"${portfolio_value:,.2f}"
 LAST_EQUITY_TXT = f"${last_equity:,.2f}"
 CASH_TXT = f"${cash:,.2f}"
 BUYING_POWER_TXT = f"${buying_power:,.2f}"
 
-# --- Template HTML ---
+# --- Template HTML (sin f-strings en HTML) ---
 html_template = """
 <!doctype html>
 <html lang="en">
@@ -258,7 +310,7 @@ html_template = """
   .kpi .value{font-size:22px;font-weight:600}
   .section-title{font-size:16px;margin:14px 0 6px 0}
   .tablewrap{overflow:auto;border:1px solid var(--border);border-radius:12px}
-  table{border-collapse:separate;border-spacing:0;width:100%;min-width:680px;background:var(--card)}
+  table{border-collapse:separate;border-spacing:0;width:100%;min-width:760px;background:var(--card)}
   th,td{padding:10px 12px;border-bottom:1px solid var(--border);font-size:14px;text-align:right;white-space:nowrap}
   th:first-child,td:first-child{text-align:left}
   thead th{position:sticky;top:0;background:var(--card);z-index:1}
@@ -320,6 +372,18 @@ html_template = """
     </table>
   </div>
 
+  <div class="section-title">Trailing Detail (High-Water & Dynamic Stop)</div>
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th>Symbol</th><th>Trail %</th><th>Submitted</th><th>High-Water</th><th>Dynamic Stop</th></tr>
+      </thead>
+      <tbody>
+        __TRAIL_DETAIL_TBODY__
+      </tbody>
+    </table>
+  </div>
+
   <div class="section-title">Active Fixed Stops</div>
   <div class="tablewrap">
     <table>
@@ -348,7 +412,7 @@ html_template = """
   <div class="tablewrap">
     <table>
       <thead>
-        <tr><th>Symbol</th><th>Qty</th><th>Avg Entry</th><th>Current</th><th>Market Value</th><th>Unreal P/L</th><th>Unreal P/L %</th></tr>
+        <tr><th>Symbol</th><th>Qty</th><th>Avg Entry</th><th>Current</th><th>Market Value</th><th>Unreal P/L</th><th>Unreal P/L %</th><th>Protection</th></tr>
       </thead>
       <tbody>
         __POS_TBODY__
@@ -368,13 +432,10 @@ const equityValuesDaily = __EQUITY_VALUES_DAILY_JSON__;
 const symbolHistory = __SYMBOL_HISTORY_JSON__;
 
 const eqCtx = document.getElementById('equityChart').getContext('2d');
-let equityMode = 'daily'; // 'daily' o 'intraday'
+let equityMode = 'daily';
 function buildEquityDataset() {
-  if (equityMode === 'daily') {
-    return { labels: equityLabelsDaily, data: equityValuesDaily };
-  } else {
-    return { labels: equityLabelsIntraday, data: equityValuesIntraday };
-  }
+  if (equityMode === 'daily') return { labels: equityLabelsDaily, data: equityValuesDaily };
+  return { labels: equityLabelsIntraday, data: equityValuesIntraday };
 }
 function renderEquity() {
   const ds = buildEquityDataset();
@@ -382,66 +443,43 @@ function renderEquity() {
   window.eqChart = new Chart(eqCtx, {
     type: 'line',
     data: { labels: ds.labels, datasets: [{ label:'Portfolio Value', data: ds.data, borderWidth:2, fill:false, tension:0.25 }] },
-    options: {
-      responsive:true, maintainAspectRatio:false,
-      plugins:{ legend:{display:false} },
-      scales:{ y:{ ticks:{ callback:(v)=>'$'+v.toLocaleString() } } }
-    }
+    options: { responsive:true, maintainAspectRatio:false, plugins:{ legend:{display:false} },
+      scales:{ y:{ ticks:{ callback:(v)=>'$'+v.toLocaleString() } } } }
   });
 }
 renderEquity();
-
 document.getElementById('equityToggle').addEventListener('click', ()=>{
   equityMode = (equityMode === 'daily') ? 'intraday' : 'daily';
   document.getElementById('equityToggle').textContent = 'Equity: ' + (equityMode === 'daily' ? 'Daily' : 'Intraday');
   renderEquity();
 });
 
-// --- Per-symbol chart ---
+// Per-symbol chart
 const symSel = document.getElementById('symSel');
 const toggleBtn = document.getElementById('toggleMetric');
-let metric = 'plpc'; // 'plpc' (%) o 'price'
-
+let metric = 'plpc';
 const symbols = Object.keys(symbolHistory).sort();
-for (const s of symbols) {
-  const opt = document.createElement('option');
-  opt.value = s; opt.textContent = s;
-  symSel.appendChild(opt);
-}
-if (symbols.length === 0) {
-  const opt = document.createElement('option');
-  opt.value = ''; opt.textContent = 'No positions';
-  symSel.appendChild(opt);
-}
-
+for (const s of symbols) { const opt = document.createElement('option'); opt.value = s; opt.textContent = s; symSel.appendChild(opt); }
+if (symbols.length === 0) { const opt = document.createElement('option'); opt.value=''; opt.textContent='No positions'; symSel.appendChild(opt); }
 const symCtx = document.getElementById('symbolChart').getContext('2d');
 let symChart = null;
-
 function renderSymbolChart(sym) {
   if (!sym || !symbolHistory[sym]) return;
-  const H = symbolHistory[sym];
-  const labels = H.t;
-  const data = (metric === 'plpc') ? H.plpc : H.price;
-  const label = (metric === 'plpc') ? '% P/L' : 'Price';
+  const H = symbolHistory[sym]; const labels = H.t; const data = (metric === 'plpc') ? H.plpc : H.price; const label = (metric === 'plpc') ? '% P/L' : 'Price';
   if (symChart) symChart.destroy();
   symChart = new Chart(symCtx, {
-    type: 'line',
-    data: { labels, datasets: [{ label: sym + ' ' + label, data, borderWidth:2, fill:false, tension:0.25 }] },
-    options: {
-      responsive:true, maintainAspectRatio:false,
-      plugins:{ legend:{display:false} },
-      scales:{ y:{ ticks:{ callback:(v)=> metric==='plpc' ? v.toFixed(2)+'%' : '$'+v.toLocaleString() } } }
-    }
+    type:'line',
+    data:{ labels, datasets:[{ label: sym+' '+label, data, borderWidth:2, fill:false, tension:0.25 }] },
+    options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{display:false} },
+      scales:{ y:{ ticks:{ callback:(v)=> metric==='plpc' ? v.toFixed(2)+'%' : '$'+v.toLocaleString() } } } }
   });
 }
-
 symSel.addEventListener('change', ()=> renderSymbolChart(symSel.value));
 toggleBtn.addEventListener('click', ()=>{
   metric = (metric === 'plpc') ? 'price' : 'plpc';
   toggleBtn.textContent = 'Metric: ' + (metric === 'plpc' ? '% P/L' : 'Price');
   renderSymbolChart(symSel.value);
 });
-
 if (symbols.length > 0) { symSel.value = symbols[0]; renderSymbolChart(symbols[0]); }
 </script>
 </body>
@@ -459,12 +497,13 @@ html = (html_template
     .replace("__EQUITY_VALUES_INTRADAY_JSON__", json.dumps(equity_values_intraday))
     .replace("__EQUITY_LABELS_DAILY_JSON__", json.dumps(equity_labels_daily))
     .replace("__EQUITY_VALUES_DAILY_JSON__", json.dumps(equity_values_daily))
-    .replace("__SYMBOL_HISTORY_JSON__", SYMBOL_HISTORY_JSON)
+    .replace("__SYMBOL_HISTORY_JSON__", json.dumps(symbol_history))
     .replace("__ORD_TBODY__", ORD_TBODY_HTML)
     .replace("__TRAIL_TBODY__", TRAIL_TBODY_HTML)
     .replace("__STOP_TBODY__", STOP_TBODY_HTML)
+    .replace("__TRAIL_DETAIL_TBODY__", TRAIL_DETAIL_TBODY_HTML)
     .replace("__POS_TBODY__", POS_TBODY_HTML)
 )
 
 OUT_HTML.write_text(html, encoding="utf-8")
-print(f"Wrote {OUT_HTML} (trailing+fixed stops sections) and updated {HIST_EQUITY} / {HIST_POS}")
+print(f"Wrote {OUT_HTML} (with trailing detail) and updated {HIST_EQUITY} / {HIST_POS}")
